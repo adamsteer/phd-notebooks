@@ -1,266 +1,183 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Dec 30 22:43:48 2015
+#fist run compute_zi_functions
 
-@author: adam
-"""
+from compute_zi_functions import *
 
-import matplotlib.pyplot as plt
-import numpy as np
-from datetime import datetime
-from scipy.signal import argrelextrema
-from sklearn import neighbors as nb
-from shapely import geometry
-#from scipy.signal import medfilt
 
 infile_dir = '../lidar.matlab/swaths/'
-infile = 'f22_1milao102506_102714_c.xyz'
+infile = 'is6_f11_pass1_aa522816_523019_c.xyz'
+
+print(infile)
 outfilename = infile[0:-4]+'_zi.xyz'
 
-
 #density parameters, should add as a data dictionary
-d_snow = 305.67 #mean of all EA obs
+d_snow = 326.31 #SIPEX2 snow
+#d_snow = 305.67 #mean of all EA obs
 sd_dsnow = 10
-d_ice = 891 #empirically derived from matching with AUV draft
+d_ice = 915.6 #empirically derived from matching with AUV draft
 sd_dice = 10
 d_water = 1028 #Hutchings2015
 sd_dwater = 1
 
-#sipex2 snow model
+#All EA snow model
 s_i = ([0.701, -0.0012])
 
 started = datetime.now()
 print(started)
 
-def compute_zs(tf, s_i, tf_uncert):
-    """
-    Take in the total freeboard (tf, float array), slope and intercept for an empirical model
-    of snow depth from elevation (s_i, tuple) and the total freeboard uncertainty
-    (tf_uncert, float array)
-
-    Return a snow depth, with an associated uncertainty.
-    zs, uncert = compute_zs(tf, ([slope, intercept]), tf_uncert)
-    """
-    
-    zs = (s_i[0] * tf) + s_i[1]
-
-    zs_uncert = 0.72 * tf_uncert
-
-    return zs, zs_uncert
-
-def compute_zi(tf, zs, d_ice, d_water, d_snow, sd_tf, sd_zs, sd_dsnow, \
-               sd_dice, sd_dwater):
-#sea ice thickness from elevation error propagation
-#after Kwok, 2010; kwok and cunningham, 2008
-#equations:
-# 4: sea ice thickness from elevation
-# 6: taylor series expansion of variance/covariance propagation using
-#    partial derivatives
-# 8, 9 and 10: partial derivatives used in the taylor series
-
-    zi = (d_water / (d_water-d_ice)) * tf - ((d_water-d_snow) / \
-         (d_water - d_ice)) * zs
-
-    zi_uncert = sd_tf**2 * (d_water / (d_water - d_ice))**2 + \
-           sd_zs**2 * ((d_snow - d_water) / (d_water - d_ice))**2 + \
-           sd_dsnow**2 * (zs / (d_water - d_ice))**2 + \
-           sd_dice**2 * (tf /  (d_water - d_ice))**2 + \
-           sd_dwater**2 * (((-d_ice * tf) + ((d_ice-d_snow) * zs)) / \
-           (d_water - d_ice)**2)**2
-
-    return zi, zi_uncert
-
-def zero_mean(data):
-    """
-    take in any array of data
-    retuun an array modified such that mean(data) == 0
-    """
-
-    oldmean = np.mean(data)
-    return data - oldmean
-
-def find_lowpoints(elev_data, nhood):
-    """
-    Pass in an array of elevation vlues and an integer  number of points to use
-    as a neighbourhood.
-    Get back the indices of local miminum elevation values for the chosen
-    neighbourhoods
-    """
-#http://docs.scipy.org/doc/scipy-0.16.1/reference/generated/
-# scipy.signal.argrelextrema.html#scipy.signal.argrelextrema
-    #as a tuple...
-
-    le_idx = argrelextrema(np.array(elev_data), np.less, order=nhood)
-    return list(le_idx[0])
-
-def find_low_intens(intens,pntile):
-    """
-    Take in some return intensity data (array) and a percentile (float)
-    Return the indices of chosen percentil of intensity values
-    """
-    li_idx =  np.where(intens <= np.percentile(intens, pntile))
-    return list(li_idx[0])
-
-def find_water_keys(xyzi, e_p, i_p):
-    """
-    Pass in:
-    - a set of X,Y,Z and Intensity points
-    - the number of points to use as a neighbourhood for choosing low elevation
-    - a percentile level for intensity thresholding
-    Get back:
-    - a set of XYZI points corresponding to 'local sea level'
-    """
-#find lowest intensity values
-    low_intens_inds = find_low_intens(xyzi[:, 3], i_p)
-    li_xyzi = xyzi[low_intens_inds, :]
-
-#find low elevations
-    low_elev_inds = find_lowpoints(li_xyzi[:, 2], e_p)
-    low_xyzi = li_xyzi[low_elev_inds, :]
-    #low_xyzi = np.squeeze(low_xyzi)
-
-    return low_xyzi
-
-def query_tree(pointcloud, tree, radius):
-    nhoods = tree.query_radius(pointcloud[:,0:3], r=radius)
-    #new_z = np.median(xyzi[nhoods[0],2])
-
-    new_z = []
-    i = 0
-    for nhood in nhoods:
-        #print(nhood)
-        new_z.append(np.nanmean(pointcloud[nhood[:],2]))
-
-        i += 1
-    return new_z
-
-def spatialmedian(pointcloud,radius):
-    """
-    Using a KDTree and scikit-learn's query_radius method,
-    ingest an n-d point cloud with the XYZ coordinates occupying
-    the first three columns respectively (pointcloud[:,0:3]) and a radius in
-    metres (or whatever units the pointcloud uses).
-    Returns a new set of Z values which contain the median Z value of points within
-    radius r of each point.
-    """
-
-    from sklearn import neighbors as nb
-
-    from datetime import datetime
-    startTime = datetime.now()
-
-    print(startTime)
-
-    tree = nb.KDTree(pointcloud[:,0:3], leaf_size=60)
-
-    print(datetime.now() - startTime)
-
-    nhoods = tree.query_radius(pointcloud[:,0:3], r=radius)
-    #new_z = np.median(xyzi[nhoods[0],2])
-
-    new_z = []
-    i = 0
-    for nhood in nhoods:
-        #print(nhood)
-        new_z.append(np.median(pointcloud[nhood[:],2]))
-        #print(pointcloud[i,:])
-        #print(new_z[i])
-
-        i += 1
-
-    print(datetime.now() - startTime)
-
-    # we really want to retugn the tree - only generate it once per operation!
-    return new_z, tree
-
+#import some points
 input_points = np.genfromtxt(infile_dir + infile)
 
-#xyz = float32(input_points[:, 1:4])
-xyzi = input_points[:, 1:5]
+# crop any that are likely to be air returns
+input_points = input_points[input_points[:,3] < -5,:]
 
+#input_points = input_points[1:2000000,:]
 
+#early on, let's find water points and trim the data such that 
+# it starts and ends with water.
+print('finding water keys to define data limits (swath must start and end with water)')
 
+#build this tree once
+#low_tree = build_tree(input_points[:,1:4], 60)
 
-#adjust lidar to a reference level
-#find the lowest point
-lowestpoint = np.min(input_points[:, 3])
+water_points = np.squeeze(find_water_keys(input_points[:,1:5], 20, 1.5, 40))
 
-#find the sd of intensity
-sd_intens = np.std(input_points[:, 4])
+print('x limits: {} - {}'.format(np.min(water_points[:,0]), np.max(water_points[:,0])))
+print('y limits: {} - {}'.format(np.min(water_points[:,1]), np.max(water_points[:,1])))
 
-#compute a reference point set
+p1 = len(input_points[:,0])
 
-xyz_fitpoints = np.squeeze(find_water_keys(xyzi, 200, 1.2))
+input_points = input_points[(input_points[:,2] >= np.min(water_points[:,1]))&\
+                            (input_points[:,2] <= np.max(water_points[:,1]))]
+p2 = len(input_points[:,0])
 
+print('trimming data: {} points trimmed from {}'.format(p1-p2, p1))
+del water_points, p1, p2
 
-knnf = nb.KNeighborsRegressor(10, algorithm='kd_tree', n_jobs=-1)
+#grab an xyzi subset to work with
+xyzi_ = input_points[:, 1:5]
+
+print('x limits: {} - {}'.format(np.min(xyzi_[:,0]), np.max(xyzi_[:,0])))
+print('y limits: {} - {}'.format(np.min(xyzi_[:,1]), np.max(xyzi_[:,1])))
+print('total points: {}'.format(len(xyzi_[:,1])))
+
+#testingregression methods
+# build a KD tree for neighbourhood regression
+#knnf = nb.KNeighborsRegressor(500, algorithm='ball_tree', n_jobs=-1)
+#experimental!!!!
 #knn = nb.RadiusNeighborsRegressor(10, algorithm='kd_tree', weights = 'distance', n_jobs=-1)
-#knnf = nb.RadiusNeighborsRegressor(10, algorithm='kd_tree', n_jobs=-1)
+#knnf = nb.RadiusNeighborsRegressor(10, algorithm='ball_tree', n_jobs=-1)
 
-knnf.fit(np.array([xyz_fitpoints[:, 0], xyz_fitpoints[:, 1]]).reshape(len(xyz_fitpoints[:, 1]), 2), xyz_fitpoints[:, 2])
+#using a loop, recursively iterate fit points toward 'level'
 
-#z_mod = clf.predict(np.array([xyzi[100000::500,0],xyzi[100000::500,1]]).reshape(len(xyzi[100000::500,0]),2))
-
-fitpoint_adjust = knnf.predict(np.array([xyz_fitpoints[:,0], xyz_fitpoints[:, 1]]).reshape(len(xyz_fitpoints[:, 0]), 2))
-
-z_fit = knnf.predict(np.array([xyzi[:,0], xyzi[:, 1]]).reshape(len(xyzi[:, 0]), 2))
-
-
-
-xyz_fitpoints_adj = np.column_stack([xyz_fitpoints[:,1], xyz_fitpoints[:,2], \
-                            xyz_fitpoints[:,3] - fitpoint_adjust])
-
-'''
-elevations are set ab0ut the Y = 0 plane here!!
-'''
-xyzi_mod = np.column_stack([input_points[:,1], input_points[:,2], \
-                            input_points[:,3] - z_fit, input_points[:,4]])
+i = 0
+while i < 1:
+    #xyzi_, keypoints = fit_points(xyzi_, [10, 2.0], knnf)
+    xyzi_, keypoints, resid, coeff = f_points(xyzi_, [10, 1.5], [1 ,3], 20, 40 )
+    print('keypoints: {}'.format(len(keypoints)))
+    print('keypoints mean elev: {}'.format(np.mean(keypoints[:,2])))
+    print('mean elev: {}'.format(np.mean(xyzi_[:,2])))
+    
+    print(i)
+    i += 1
 
 
-median_z, points_kdtree = spatialmedian(xyzi_mod, 2)
+#xyzi_, keypoints = fit_points(xyzi_, [10, 2.0], knnf)
+#print('keypoints: {}'.format(len(keypoints)))
+#print('mean elev: {}'.format(np.mean(xyzi_[:,2])))
+
+##assuming elev > 5m = iceberg!
+berg_h = 10
+nobergs = np.where(xyzi_[:,2] < berg_h)
+xyzi_ = xyzi_[nobergs[0],:]
+input_points = input_points[nobergs[0],:]
+
+# because water is still too high!
+#adjust = np.percentile(keypoints[:,2],1)
+#print('adjustment for heights after model fitting: {}'.format(adjust))
+#xyzi_[:,2] = xyzi_[:,2] + adjust
+
+
+print('building KDtree')
+#one last tree build
+startTime = datetime.now()
+points_kdtree = build_tree(xyzi_[:,0:2], 60)
+print('time to build tree: {}'.format(datetime.now() - startTime))
+
+#n_stats returns mean, median, sd in order for a 1.5m radius nhood
+startTime = datetime.now()
+nhood_stats = np.array(n_filter(xyzi_, points_kdtree, 1))
+print('time to generate n stats: {}'.format(datetime.now() - startTime))
 
 #median_z = query_tree(xyzi, points_kdtree, 3)
-
-
-#replace xyzi Z with median Z
-
+#replace xyzi Z with median Z [:,1]
+# or mean_z [:,0]
 xyzi2 = np.column_stack([input_points[:,1], input_points[:,2], \
-                            median_z, input_points[:,4]])
+                            nhood_stats[:,1], input_points[:,4]])
 
-plt.plot(xyzi2[:,2] - xyzi_mod[:,2])
-
-
-#np.savetxt('xyz_fitpoints_pass1_nr2_100_1.2.txt', xyz_fitpoints, fmt='%.5f')
+#rproxy uses a wider nhood. Here, 10m radius!
+startTime = datetime.now()
+r_proxy = np.array(n_filter(xyzi_, points_kdtree, 5.5 ))
+print('time to generate n stats: {}'.format(datetime.now() - startTime))
 
 ###
 #and make snow/ice thicknesses
 
-tf = np.array(median_z)
+#smooth things just a little
+tf = nhood_stats[:,1]
+
+#or keep them raw
+#tf = xyzi_[:,2]
+
+print('first few TF points: {}'.format(tf[0:3]))
 #tf = input_points[:,3]-z_mod
 
-tf[np.where(tf < 0)] = 0
+sub_z = np.where(tf<0)
+print('total points where total freeboard < 0 (reassigned to 0): {}'.format(len(sub_z[0])))
+tf[sub_z] = 0
 
 sd_tf = input_points[:, 8]
 
 zs, zs_uncert = compute_zs(tf, s_i, sd_tf)
 
+sub_z = np.where(zs<0)
+print('total points where snow < 0 (reasigned to 0): {}'.format(len(sub_z[0])))
+zs[sub_z] = 0
+
+#oversnowed = np.where(zs > tf)
+#print('total oversnowed points (zs > tf, zs reassigned to 0): {}'.format(len(oversnowed[0])))
+#zs[oversnowed] = 0
+
 #should really be passing a dictionary here...
 zi, zi_uncert = compute_zi(tf, zs, d_ice, d_water, d_snow, sd_tf, \
                            zs_uncert, sd_dsnow, sd_dice, sd_dwater)
 
-np.mean(zs)
-np.std(zs)
+#probably want to try and kill icebergs...
 
-np.mean(zi)
-np.median(zi)
-np.std(zi)
+print('assuming tF > {} m is a berg...'.format(berg_h))
+
+print('min snow depth: {}'.format(np.min(zs)))
+print('max snow depth: {}'.format(np.max(zs)))
+print('mean snow depth: {}'.format(np.mean(zs)))
+print('snow depth sd: {}'.format(np.std(zs)))
+
+print('min total freeboard: {}'.format(np.min(tf)))
+print('max total freeboard: {}'.format(np.max(tf)))
+print('mean total freeboard: {}'.format(np.mean(tf)))
+print('total freeboard sd: {}'.format(np.std(tf)))
+
+print('min ice thickness: {}'.format(np.min(zi)))
+print('max ice thickness: {}'.format(np.max(zi)))
+print('mean ice thickness: {}'.format(np.mean(zi)))
+print('median ice thickness: {}'.format(np.median(zi)))
+print('ice thickness sd: {}'.format(np.std(zi)))
+
+print('x limits: {} - {}'.format(np.min(xyzi2[:,0]), np.max(xyzi2[:,0])))
+print('y limits: {} - {}'.format(np.min(xyzi2[:,1]), np.max(xyzi2[:,1])))
 
 
 '''
 need draft as well. We compute ZI, ZS and TF, so FB =  TF-ZS,
 and draft = (TF-ZS) - ZI
-
-
 '''
 outfile = np.column_stack((input_points[:, 0], input_points[:, 1], \
                            input_points[:, 2], tf.T, sd_tf.T, zi.T, \
@@ -273,7 +190,22 @@ outfile = np.column_stack((input_points[:, 0], input_points[:, 1], \
 with open(outfilename, 'wb') as f:
     f.write(b'GPS_secs X Y Ft sd_Ft Zi sd_Zi Df sd_Df Fi sd_Fi Zs sd_Zs\n')
     np.savetxt(f, outfile, fmt='%.5f')
+    
+#keep bergs in these data
+with open(infile[0:-4]+'nstats.xyz', 'wb') as f:
+    f.write(b'GPS_secs X Y mean median sd\n')
+    np.savetxt(f, np.column_stack((input_points[:, 0], input_points[:, 1], \
+                                   input_points[:, 2], nhood_stats[:,0],\
+                                   nhood_stats[:,1], nhood_stats[:,2])),\
+                                   fmt='%.5f')
 
-np.savetxt( infile[0:-4]+'mf_4m_xyzi.xyz', xyzi2)
-np.savetxt( infile[0:-4]+'uf_xyzi.xyz', xyzi_mod)
-np.savetxt( infile[0:-4]+'keypoints.xyz', xyz_fitpoints_adj)
+with open(infile[0:-4]+'rproxy.xyz', 'wb') as f:
+    f.write(b'GPS_secs X Y mean median sd\n')
+    np.savetxt(f, np.column_stack((input_points[:, 0], input_points[:, 1], \
+                                   input_points[:, 2], r_proxy[:,0],\
+                                   r_proxy[:,1], r_proxy[:,2])),\
+                                   fmt='%.5f')
+
+#np.savetxt( infile[0:-4]+'mf_4m_xyzi.xyz', xyzi2)
+#np.savetxt( infile[0:-4]+'uf_xyzi.xyz', xyzi_)
+np.savetxt( infile[0:-4]+'keypoints.xyz', keypoints)
